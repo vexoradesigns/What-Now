@@ -1,8 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import mammoth from "mammoth";
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
-
 const EXAMPLES = [
   {
     id: "landlord",
@@ -40,37 +38,155 @@ Upon review of the submitted documentation, we have determined that the services
 Sincerely,
 Claims Review Department`,
   },
-  {
-    id: "planchoice",
-    label: "Comparing plans",
-    text: `I'm trying to decide between two internet plans:
-Plan A: $45/month, 300 Mbps, 2-year contract
-Plan B: $60/month, 500 Mbps, no contract
-Plan C: $52/month, 400 Mbps, 1-year contract
-
-Which one should I go with?`,
-  },
 ];
 
 const INTENTS = [
-  { id: "explain", label: "Explain this", hint: "Break down what it actually means" },
-  { id: "action", label: "What should I do?", hint: "Get clear next steps" },
-  { id: "reply", label: "Help me reply", hint: "Draft a response for them" },
-  { id: "risk", label: "Is there a problem?", hint: "Spot risks and red flags" },
-  { id: "plan", label: "Make a plan", hint: "Turn this into a step-by-step plan" },
+  {
+    id: "explain",
+    label: "Explain",
+    fullLabel: "Explain this",
+    hint: "What does this mean?",
+    icon: "💡",
+    focus: "User just wants to know what this means, plain and simple. Keep actions minimal.",
+  },
+  {
+    id: "action",
+    label: "Act",
+    fullLabel: "What should I do?",
+    hint: "What should I do?",
+    icon: "✅",
+    focus: "User wants to know what to do. Make 'actions' the sharpest, most useful part.",
+  },
+  {
+    id: "reply",
+    label: "Reply",
+    fullLabel: "Help me reply",
+    hint: "Help me respond.",
+    icon: "💬",
+    focus:
+      "User needs to reply. Always set needsResponse true and write a short, natural reply — like something they'd actually text or email, not a formal letter.",
+    forceReply: true,
+  },
+  {
+    id: "risk",
+    label: "Risk",
+    fullLabel: "Is there a problem?",
+    hint: "What should I watch out for?",
+    icon: "⚠️",
+    focus:
+      "User is worried something is off. Focus on 'watchouts' — but only include one if something's genuinely worth flagging. If nothing's wrong, say that plainly and leave watchouts empty.",
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    fullLabel: "Make a plan",
+    hint: "What are the steps?",
+    icon: "📋",
+    focus: "User wants a simple plan. Order 'actions' as first, second, third — nothing extra.",
+  },
 ];
 
-async function callAnalyze(payload) {
-  const response = await fetch(`${API_BASE}/api/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || "The analysis request failed. Try again.");
+// Per-intent accent colors, echoing the color-coded cards in the reference design.
+const INTENT_ACCENTS = {
+  explain: { light: { c: "#6D4AFF", s: "#EEEAFC" }, dark: { c: "#A78BFA", s: "#2B2650" } },
+  action: { light: { c: "#189A5B", s: "#E3F7EA" }, dark: { c: "#4ADE80", s: "#16321F" } },
+  reply: { light: { c: "#2563EB", s: "#E6EEFE" }, dark: { c: "#7CA6FF", s: "#1B2A4A" } },
+  risk: { light: { c: "#DC5B2E", s: "#FCEBE3" }, dark: { c: "#F0916B", s: "#3A2A20" } },
+  plan: { light: { c: "#4B4B63", s: "#ECEAF5" }, dark: { c: "#B9B6E0", s: "#2A2748" } },
+};
+
+const SYSTEM_PROMPT = `You are "What Now?". You read confusing messages, screenshots, documents, and emails for a friend and tell them what's going on and what to do. You sound like a smart friend texting them back — not a robot, not a lawyer, not a teacher, not a tech support agent.
+
+Respond with ONLY valid JSON, no markdown fences, no preamble, matching exactly this shape:
+{
+  "whatHappened": "1-2 short sentences, plain everyday English. What this actually is.",
+  "actions": ["short plain step 1", "short plain step 2", "short plain step 3 (optional)"],
+  "watchouts": ["one short thing to watch for", "second one, only if truly important"],
+  "needsResponse": true or false,
+  "suggestedResponse": "a short, natural, ready-to-send reply, 1-3 sentences — or empty string if needsResponse is false"
+}
+
+Hard limits — do not exceed these:
+- "whatHappened": 1-2 sentences MAX. No background, no repeating what the content already said.
+- "actions": 3 items MAX. Each a short, plain step (under ~12 words). No sub-explanations.
+- "watchouts": 2 items MAX. Only include this at all if there is something genuinely worth flagging — an empty array is correct and expected when nothing's wrong. Never pad it with a minor or obvious point just to fill it.
+- "suggestedResponse": 1-3 short sentences. Sounds like a real text or email a person would actually send, not a formal letter.
+
+Voice — this is the most important part:
+- Write like you're texting a friend who asked "wait what does this mean." Casual, warm, plain.
+- Use everyday words. Say "this looks fake" not "this is a likely phishing attempt." Say "don't trust the link" not "exercise caution regarding the embedded hyperlink."
+- Never use words like: "leverage," "utilize," "credentials," "malicious," "fraudulent," "notify," "commence," "ascertain," "in order to," "please be advised." If a simple word works, use it.
+- Be direct and confident. Don't hedge with "it appears that," "this could potentially," "you may wish to consider." Just say the thing.
+- Don't over-explain. One clear sentence beats two that say the same thing a different way. Don't restate a point you already made.
+- Only set needsResponse true if a reply would plausibly be sent by the person, unless told otherwise below.
+
+Safety — follow this closely, especially for anything involving money, passwords or personal info, medical issues, legal issues, or possible scams:
+- Never claim to be sure when the content doesn't give you enough to be sure. Say what's unclear in one short plain clause (e.g. "can't tell if this is real") instead of guessing.
+- Never invent details, names, dates, or amounts that aren't actually in what the user gave you.
+- If something needs checking before the person acts (a phone number, an official website, a claim someone made), tell them what to verify and how — don't just say "be careful."
+- Never write a suggested reply that asks anyone for a password, one-time code (OTP), private key, or other sensitive credential — flag it as a red flag instead if the original message is asking for one of these.
+- Keep every warning short and practical. No lectures.
+- The user will tell you what they need most right now — follow that focus while staying inside every limit and rule above.`;
+
+function buildGeminiParts(input, intent) {
+  const parts = [];
+  if (input.mode === "image" && input.image) {
+    parts.push({ inlineData: { mimeType: input.image.mimeType, data: input.image.base64 } });
+    parts.push({ text: "Here is a screenshot or photo. Analyze it per your instructions." });
+  } else if (input.mode === "document" && input.document) {
+    if (input.document.kind === "pdf") {
+      parts.push({ inlineData: { mimeType: "application/pdf", data: input.document.base64 } });
+      parts.push({ text: "Here is a document. Analyze it per your instructions." });
+    } else {
+      parts.push({ text: `Here is a document (${input.document.name}):\n\n${input.document.text}` });
+    }
+  } else {
+    parts.push({ text: `Here is the content to analyze:\n\n${input.text}` });
   }
-  return data; // { result, contents }
+  parts.push({ text: `What the user needs right now: "${intent.fullLabel}". ${intent.focus}` });
+  return parts;
+}
+
+async function analyzeContent(input, intent, apiKey) {
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error("Add your Gemini API key above first.");
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(
+      apiKey.trim()
+    )}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: buildGeminiParts(input, intent) }],
+        generationConfig: { maxOutputTokens: 400, responseMimeType: "application/json" },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 403) {
+      throw new Error("That API key didn't work. Check it and try again.");
+    }
+    throw new Error("The analysis request failed. Try again.");
+  }
+
+  const data = await response.json();
+  const raw = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
+  const cleaned = raw.replace(/^```(json)?/i, "").replace(/```$/i, "").trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (intent.forceReply) parsed.needsResponse = true;
+    if (Array.isArray(parsed.actions)) parsed.actions = parsed.actions.slice(0, 3);
+    if (Array.isArray(parsed.watchouts)) parsed.watchouts = parsed.watchouts.slice(0, 2);
+    return parsed;
+  } catch (e) {
+    throw new Error("Couldn't make sense of the response. Try again.");
+  }
 }
 
 function fileToBase64(file) {
@@ -91,49 +207,52 @@ function fileToText(file) {
   });
 }
 
-export default function App() {
+export default function WhatNowApp() {
   const [isDark, setIsDark] = useState(false);
-  const [step, setStep] = useState("input"); // 'input' | 'intent' | 'clarify' | 'result'
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [step, setStep] = useState("input"); // 'input' | 'intent' | 'result'
   const [mode, setMode] = useState("text"); // 'text' | 'image' | 'document'
   const [textInput, setTextInput] = useState("");
-  const [image, setImage] = useState(null); // { base64, mimeType, previewUrl, name }
-  const [document, setDocument] = useState(null); // { kind: 'pdf'|'text', base64?, text?, name, ext }
+  const [image, setImage] = useState(null);
+  const [document, setDocument] = useState(null);
   const [selectedIntentId, setSelectedIntentId] = useState(null);
-  const [activeIntent, setActiveIntent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [copied, setCopied] = useState(false);
   const fileInputRef = useRef(null);
   const docInputRef = useRef(null);
-
-  // v5: conversation continuity
-  const [contentsState, setContentsState] = useState(null);
-
-  // v5: AI-initiated clarifying question
-  const [clarifyQuestion, setClarifyQuestion] = useState("");
-  const [clarifyAnswer, setClarifyAnswer] = useState("");
-  const [clarifyLoading, setClarifyLoading] = useState(false);
-
-  // v5: user-initiated follow-up chat
-  const [followUps, setFollowUps] = useState([]);
-  const [followUpInput, setFollowUpInput] = useState("");
-  const [followUpLoading, setFollowUpLoading] = useState(false);
-
-  // v5: "Why?" expand state, keyed per answer ("main" or "f0", "f1", ...)
-  const [whyOpen, setWhyOpen] = useState({});
-  const [copiedKey, setCopiedKey] = useState(null);
 
   const colors = isDark ? darkColors : lightColors;
   const styles = buildStyles(colors);
 
   const hasInput =
-    mode === "text"
-      ? textInput.trim().length > 0
-      : mode === "image"
-      ? !!image
-      : !!document;
-
+    mode === "text" ? textInput.trim().length > 0 : mode === "image" ? !!image : !!document;
+  const hasKey = apiKey.trim().length > 0;
   const currentInput = { mode, text: textInput, image, document };
+
+  const runAnalysis = useCallback(
+    async (intent, overrideInput) => {
+      const input = overrideInput || currentInput;
+      setSelectedIntentId(intent.id);
+      setLoading(true);
+      setError("");
+      try {
+        const data = await analyzeContent(input, intent, apiKey);
+        setResult(data);
+        setStep("result");
+      } catch (e) {
+        setError(e.message || "Something went wrong. Try again.");
+        setStep("intent");
+      } finally {
+        setLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, textInput, image, document, apiKey]
+  );
 
   const handleImageFile = async (file) => {
     if (!file || !file.type.startsWith("image/")) {
@@ -142,12 +261,7 @@ export default function App() {
     }
     setError("");
     const base64 = await fileToBase64(file);
-    setImage({
-      base64,
-      mimeType: file.type,
-      previewUrl: URL.createObjectURL(file),
-      name: file.name,
-    });
+    setImage({ base64, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name });
   };
 
   const handleDocumentFile = async (file) => {
@@ -174,7 +288,7 @@ export default function App() {
   };
 
   const goToIntent = () => {
-    if (!hasInput) return;
+    if (!hasInput || !hasKey) return;
     setError("");
     setStep("intent");
   };
@@ -189,16 +303,6 @@ export default function App() {
     setStep("intent");
   };
 
-  const resetConversationState = () => {
-    setContentsState(null);
-    setFollowUps([]);
-    setFollowUpInput("");
-    setWhyOpen({});
-    setCopiedKey(null);
-    setClarifyQuestion("");
-    setClarifyAnswer("");
-  };
-
   const startOver = () => {
     setResult(null);
     setError("");
@@ -206,9 +310,7 @@ export default function App() {
     setImage(null);
     setDocument(null);
     setSelectedIntentId(null);
-    setActiveIntent(null);
     setMode("text");
-    resetConversationState();
     setStep("input");
   };
 
@@ -216,107 +318,34 @@ export default function App() {
     setResult(null);
     setError("");
     setSelectedIntentId(null);
-    setActiveIntent(null);
-    resetConversationState();
     setStep("intent");
   };
 
-  const runAnalysis = useCallback(
-    async (intent) => {
-      setSelectedIntentId(intent.id);
-      setActiveIntent(intent);
-      setLoading(true);
-      setError("");
-      resetConversationState();
-      try {
-        const data = await callAnalyze({ input: currentInput, intentId: intent.id });
-        setContentsState(data.contents);
-        if (data.result.needsFollowUp && data.result.followUpQuestion) {
-          setClarifyQuestion(data.result.followUpQuestion);
-          setStep("clarify");
-        } else {
-          setResult(data.result);
-          setStep("result");
-        }
-      } catch (e) {
-        setError(e.message || "Something went wrong. Try again.");
-        setStep("intent");
-      } finally {
-        setLoading(false);
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mode, textInput, image, document]
-  );
-
-  const submitClarifyAnswer = async () => {
-    if (!clarifyAnswer.trim() || clarifyLoading) return;
-    const answerText = clarifyAnswer.trim();
-    setClarifyLoading(true);
-    setError("");
+  const copyResponse = async () => {
+    if (!result?.suggestedResponse) return;
     try {
-      const data = await callAnalyze({
-        contents: contentsState,
-        message: answerText,
-        intentId: activeIntent.id,
-      });
-      setContentsState(data.contents);
-      setClarifyAnswer("");
-      // Always show the result now — avoids looping on a second clarifying question.
-      setResult(data.result);
-      setStep("result");
+      await navigator.clipboard.writeText(result.suggestedResponse);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
     } catch (e) {
-      setError(e.message || "Something went wrong. Try again.");
-    } finally {
-      setClarifyLoading(false);
-    }
-  };
-
-  const submitFollowUp = async () => {
-    if (!followUpInput.trim() || followUpLoading || !activeIntent) return;
-    const q = followUpInput.trim();
-    setFollowUpInput("");
-    setFollowUpLoading(true);
-    setError("");
-    try {
-      const data = await callAnalyze({
-        contents: contentsState,
-        message: q,
-        intentId: activeIntent.id,
-      });
-      setContentsState(data.contents);
-      setFollowUps((prev) => [...prev, { question: q, result: data.result }]);
-    } catch (e) {
-      setError(e.message || "Something went wrong. Try again.");
-    } finally {
-      setFollowUpLoading(false);
-    }
-  };
-
-  const copyText = async (text, key) => {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 1800);
-    } catch (e) {
-      /* clipboard unavailable, ignore */
+      /* clipboard unavailable */
     }
   };
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} className="wn-page">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
         * { box-sizing: border-box; }
         body { margin: 0; }
         .wn-textarea:focus, .wn-tab:focus-visible, .wn-btn:focus-visible, .wn-chip:focus-visible,
-        .wn-drop:focus-visible, .wn-intent:focus-visible, .wn-theme:focus-visible {
+        .wn-drop:focus-visible, .wn-intent:focus-visible, .wn-theme:focus-visible, .wn-tool:focus-visible {
           outline: 2px solid ${colors.teal}; outline-offset: 2px;
         }
         .wn-drop.dragging { border-color: ${colors.teal} !important; background: ${colors.tealSoft} !important; }
-        .wn-intent { transition: border-color 0.15s ease, background 0.15s ease; }
-        .wn-intent:hover:not(:disabled) { border-color: ${colors.teal}; background: ${colors.tealSoft}; }
+        .wn-intent { transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease; }
+        .wn-intent:hover:not(:disabled) { border-color: ${colors.teal}; transform: translateY(-1px); }
+        .wn-tool:disabled { opacity: 0.45; cursor: not-allowed; }
         @keyframes wn-scan {
           0% { transform: translateY(-2px); opacity: 0; }
           10% { opacity: 1; }
@@ -327,246 +356,318 @@ export default function App() {
           from { opacity: 0; transform: translateY(6px); }
           to { opacity: 1; transform: translateY(0); }
         }
-        @keyframes wn-spin {
-          to { transform: rotate(360deg); }
-        }
-        @keyframes wn-pulse {
-          0%, 100% { opacity: 0.55; }
-          50% { opacity: 1; }
-        }
+        @keyframes wn-spin { to { transform: rotate(360deg); } }
+        @keyframes wn-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
         .wn-card { animation: wn-fade-up 0.35s ease both; }
         .wn-spinner { animation: wn-spin 0.8s linear infinite; }
         .wn-loading-text { animation: wn-pulse 1.4s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) {
           .wn-scanline, .wn-card, .wn-spinner, .wn-loading-text { animation: none !important; }
         }
+
+        /* Desktop layout */
+        @media (min-width: 860px) {
+          .wn-page { padding-bottom: 48px !important; }
+          .wn-container { max-width: 980px !important; }
+          .wn-bottomnav { display: none !important; }
+          .wn-hero { text-align: center !important; max-width: 640px !important; margin: 8px auto 28px !important; }
+          .wn-hero-text { margin-left: auto !important; margin-right: auto !important; }
+          .wn-input-card { padding: 28px !important; }
+          .wn-intent-list { display: grid !important; grid-template-columns: repeat(5, 1fr) !important; gap: 12px !important; }
+          .wn-intent-card { flex-direction: column !important; align-items: center !important; text-align: center !important; gap: 10px !important; padding: 22px 12px !important; }
+          .wn-intent-arrow { display: none !important; }
+          .wn-intent-hint { text-align: center !important; }
+        }
       `}</style>
 
-      <div style={styles.container}>
+      {/* Soft decorative background blobs, purely cosmetic */}
+      <div style={styles.blobTop} aria-hidden="true" />
+      <div style={styles.blobBottom} aria-hidden="true" />
+
+      <div style={styles.container} className="wn-container">
         <header style={styles.headerRow}>
-          <div>
-            <div style={styles.eyebrow}>PLAIN-ENGLISH READS</div>
-            <h1 style={styles.title}>What Now?</h1>
+          <div style={styles.logoRow}>
+            <div style={styles.logoMark}>?</div>
+            <span style={styles.logoWordmark}>
+              What <span style={{ color: colors.teal }}>Now?</span>
+            </span>
           </div>
           <button
             className="wn-theme"
             style={styles.themeToggle}
             onClick={() => setIsDark((d) => !d)}
-            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-            title={isDark ? "Switch to light mode" : "Switch to dark mode"}
           >
-            {isDark ? "☀️" : "🌙"}
+            <span>{isDark ? "☀️" : "🌙"}</span>
+            <span>{isDark ? "Light mode" : "Dark mode"}</span>
           </button>
         </header>
 
         {step === "input" && (
-          <div style={styles.inputCard}>
-            <p style={styles.emptyState}>
-              Give me something confusing. I'll help you understand it and figure out what
-              to do next — try "I got this message, what now?" or "Should I buy this?"
-            </p>
-
-            <div style={styles.tabRow} role="tablist">
-              <button
-                className="wn-tab"
-                role="tab"
-                aria-selected={mode === "text"}
-                onClick={() => setMode("text")}
-                style={{ ...styles.tab, ...(mode === "text" ? styles.tabActive : {}) }}
-              >
-                ✍️ Text
-              </button>
-              <button
-                className="wn-tab"
-                role="tab"
-                aria-selected={mode === "image"}
-                onClick={() => setMode("image")}
-                style={{ ...styles.tab, ...(mode === "image" ? styles.tabActive : {}) }}
-              >
-                📸 Screenshot
-              </button>
-              <button
-                className="wn-tab"
-                role="tab"
-                aria-selected={mode === "document"}
-                onClick={() => setMode("document")}
-                style={{ ...styles.tab, ...(mode === "document" ? styles.tabActive : {}) }}
-              >
-                📄 Document
-              </button>
+          <>
+            <div style={styles.hero} className="wn-hero">
+              <h1 style={styles.heroHeadline}>Something confusing?</h1>
+              <h2 style={styles.heroSub}>I'll make it clear.</h2>
+              <p style={styles.heroText} className="wn-hero-text">
+                Paste a message, upload a screenshot, or add a document.
+              </p>
             </div>
 
-            {mode === "text" && (
-              <textarea
-                className="wn-textarea"
-                style={styles.textarea}
-                placeholder="Paste the email, text, letter, or chat here..."
-                value={textInput}
-                onChange={(e) => setTextInput(e.target.value)}
-                rows={8}
-              />
-            )}
-
-            {mode === "image" && (
-              <div
-                className="wn-drop"
-                tabIndex={0}
-                style={styles.dropzone}
-                onClick={() => fileInputRef.current?.click()}
-                onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.add("dragging");
-                }}
-                onDragLeave={(e) => e.currentTarget.classList.remove("dragging")}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.remove("dragging");
-                  handleImageFile(e.dataTransfer.files[0]);
-                }}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: "none" }}
-                  onChange={(e) => handleImageFile(e.target.files[0])}
-                />
-                {image ? (
-                  <div style={styles.previewWrap}>
-                    <img src={image.previewUrl} alt="Uploaded screenshot" style={styles.previewImg} />
-                    <div style={styles.previewName}>{image.name}</div>
-                    <button
-                      style={styles.smallLinkBtn}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setImage(null);
-                      }}
-                    >
-                      Remove image
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div style={styles.dropIcon}>＋</div>
-                    <div style={styles.dropText}>Tap to upload a screenshot</div>
-                    <div style={styles.dropSubtext}>or drag an image here</div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {mode === "document" && (
-              <div
-                className="wn-drop"
-                tabIndex={0}
-                style={styles.dropzone}
-                onClick={() => docInputRef.current?.click()}
-                onKeyDown={(e) => e.key === "Enter" && docInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.add("dragging");
-                }}
-                onDragLeave={(e) => e.currentTarget.classList.remove("dragging")}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.currentTarget.classList.remove("dragging");
-                  handleDocumentFile(e.dataTransfer.files[0]);
-                }}
-              >
-                <input
-                  ref={docInputRef}
-                  type="file"
-                  accept=".pdf,.docx,.txt"
-                  style={{ display: "none" }}
-                  onChange={(e) => handleDocumentFile(e.target.files[0])}
-                />
-                {document ? (
-                  <div style={styles.previewWrap}>
-                    <div style={styles.docBadge}>{document.ext.toUpperCase()}</div>
-                    <div style={styles.previewName}>{document.name}</div>
-                    <button
-                      style={styles.smallLinkBtn}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDocument(null);
-                      }}
-                    >
-                      Remove document
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div style={styles.dropIcon}>＋</div>
-                    <div style={styles.dropText}>Tap to upload a document</div>
-                    <div style={styles.dropSubtext}>PDF, DOCX, or TXT</div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {error && <div style={styles.errorBox}>{error}</div>}
-
-            <button
-              className="wn-btn"
-              style={{
-                ...styles.primaryBtn,
-                ...(hasInput ? {} : styles.btnDisabled),
-              }}
-              disabled={!hasInput}
-              onClick={goToIntent}
-            >
-              Continue →
-            </button>
-
-            <div style={styles.exampleWrap}>
-              <div style={styles.exampleLabel}>Or try an example</div>
-              <div style={styles.chipRow}>
-                {EXAMPLES.map((ex) => (
-                  <button
-                    key={ex.id}
-                    className="wn-chip"
-                    style={styles.chip}
-                    onClick={() => loadExample(ex)}
-                  >
-                    {ex.label}
+            <div style={styles.inputCard} className="wn-input-card">
+              <div style={styles.keyBox}>
+                <label style={styles.keyLabel} htmlFor="wn-gemini-key">
+                  Gemini API key
+                </label>
+                <div style={styles.keyRow}>
+                  <input
+                    id="wn-gemini-key"
+                    type={showKey ? "text" : "password"}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="Paste your key here"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    style={styles.keyInput}
+                  />
+                  <button type="button" style={styles.keyShowBtn} onClick={() => setShowKey((s) => !s)}>
+                    {showKey ? "Hide" : "Show"}
                   </button>
-                ))}
+                </div>
+                <div style={styles.keyHint}>
+                  Stays in your browser for this session only, never saved.{" "}
+                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={styles.keyLink}>
+                    Get a free key
+                  </a>
+                </div>
+              </div>
+
+              <div style={styles.tabRow} role="tablist">
+                <button
+                  className="wn-tab"
+                  role="tab"
+                  aria-selected={mode === "text"}
+                  onClick={() => setMode("text")}
+                  style={{ ...styles.tab, ...(mode === "text" ? styles.tabActive : {}) }}
+                >
+                  <span>💬</span> Text
+                </button>
+                <button
+                  className="wn-tab"
+                  role="tab"
+                  aria-selected={mode === "image"}
+                  onClick={() => setMode("image")}
+                  style={{ ...styles.tab, ...(mode === "image" ? styles.tabActive : {}) }}
+                >
+                  <span>🖼️</span> Screenshot
+                </button>
+                <button
+                  className="wn-tab"
+                  role="tab"
+                  aria-selected={mode === "document"}
+                  onClick={() => setMode("document")}
+                  style={{ ...styles.tab, ...(mode === "document" ? styles.tabActive : {}) }}
+                >
+                  <span>📄</span> Document
+                </button>
+              </div>
+
+              {mode === "text" && (
+                <textarea
+                  className="wn-textarea"
+                  style={styles.textarea}
+                  placeholder="Paste your confusing message here..."
+                  value={textInput}
+                  onChange={(e) => setTextInput(e.target.value)}
+                  rows={6}
+                />
+              )}
+
+              {mode === "image" && (
+                <div
+                  className="wn-drop"
+                  tabIndex={0}
+                  style={styles.dropzone}
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.add("dragging");
+                  }}
+                  onDragLeave={(e) => e.currentTarget.classList.remove("dragging")}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove("dragging");
+                    handleImageFile(e.dataTransfer.files[0]);
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => handleImageFile(e.target.files[0])}
+                  />
+                  {image ? (
+                    <div style={styles.previewWrap}>
+                      <img src={image.previewUrl} alt="Uploaded screenshot" style={styles.previewImg} />
+                      <div style={styles.previewName}>{image.name}</div>
+                      <button
+                        style={styles.smallLinkBtn}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setImage(null);
+                        }}
+                      >
+                        Remove image
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={styles.dropIcon}>＋</div>
+                      <div style={styles.dropText}>Tap to upload a screenshot</div>
+                      <div style={styles.dropSubtext}>or drag an image here</div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {mode === "document" && (
+                <div
+                  className="wn-drop"
+                  tabIndex={0}
+                  style={styles.dropzone}
+                  onClick={() => docInputRef.current?.click()}
+                  onKeyDown={(e) => e.key === "Enter" && docInputRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.add("dragging");
+                  }}
+                  onDragLeave={(e) => e.currentTarget.classList.remove("dragging")}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove("dragging");
+                    handleDocumentFile(e.dataTransfer.files[0]);
+                  }}
+                >
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept=".pdf,.docx,.txt"
+                    style={{ display: "none" }}
+                    onChange={(e) => handleDocumentFile(e.target.files[0])}
+                  />
+                  {document ? (
+                    <div style={styles.previewWrap}>
+                      <div style={styles.docBadge}>{document.ext.toUpperCase()}</div>
+                      <div style={styles.previewName}>{document.name}</div>
+                      <button
+                        style={styles.smallLinkBtn}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDocument(null);
+                        }}
+                      >
+                        Remove document
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={styles.dropIcon}>＋</div>
+                      <div style={styles.dropText}>Tap to upload a document</div>
+                      <div style={styles.dropSubtext}>PDF, DOCX, or TXT</div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <div style={styles.toolRow}>
+                <div style={styles.toolIcons}>
+                  <button
+                    type="button"
+                    className="wn-tool"
+                    style={styles.toolBtn}
+                    title="Attach a screenshot"
+                    onClick={() => setMode("image")}
+                  >
+                    📎
+                  </button>
+                  <button type="button" className="wn-tool" style={styles.toolBtn} title="Voice input — coming soon" disabled>
+                    🎤
+                  </button>
+                  <button type="button" className="wn-tool" style={styles.toolBtn} title="Powered by AI" disabled>
+                    ✨
+                  </button>
+                </div>
+                <button
+                  className="wn-btn"
+                  style={{ ...styles.primaryBtn, ...(hasInput && hasKey ? {} : styles.btnDisabled) }}
+                  disabled={!hasInput || !hasKey}
+                  onClick={goToIntent}
+                >
+                  Continue →
+                </button>
+              </div>
+
+              {error && <div style={styles.errorBox}>{error}</div>}
+              {!hasKey && hasInput && (
+                <div style={styles.errorBox}>Add your Gemini API key above to continue.</div>
+              )}
+
+              <div style={styles.exampleWrap}>
+                <div style={styles.exampleLabel}>Or try an example</div>
+                <div style={styles.chipRow}>
+                  {EXAMPLES.map((ex) => (
+                    <button key={ex.id} className="wn-chip" style={styles.chip} onClick={() => loadExample(ex)}>
+                      {ex.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+
+            <div style={styles.footerTagline}>
+              ✨ We make confusing things clear, so you can move forward with confidence.
+            </div>
+          </>
         )}
 
         {step === "intent" && (
-          <div style={styles.inputCard}>
+          <div style={styles.inputCard} className="wn-input-card">
             <button style={styles.backLink} onClick={() => setStep("input")} disabled={loading}>
               ← Edit content
             </button>
-            <div style={styles.intentHeading}>What do you need?</div>
+            <div style={styles.intentHeading}>What do you want to know?</div>
             <div style={styles.intentSub}>Pick one — we'll focus the answer around it.</div>
 
-            <div style={styles.intentList}>
+            <div style={styles.intentList} className="wn-intent-list">
               {INTENTS.map((intent) => {
                 const isActive = loading && selectedIntentId === intent.id;
+                const acc = INTENT_ACCENTS[intent.id][isDark ? "dark" : "light"];
                 return (
                   <button
                     key={intent.id}
                     className="wn-intent"
                     style={{
                       ...styles.intentCard,
-                      ...(isActive ? styles.intentCardActive : {}),
+                      ...(isActive ? { borderColor: acc.c, background: acc.s } : {}),
                     }}
                     disabled={loading}
                     onClick={() => runAnalysis(intent)}
                   >
-                    <div style={styles.intentText}>
-                      <div style={styles.intentLabel}>{intent.label}</div>
-                      <div style={styles.intentHint}>{intent.hint}</div>
+                    <div className="wn-intent-card-inner" style={{ display: "contents" }}>
+                      <div style={{ ...styles.intentIcon, background: acc.s }}>{intent.icon}</div>
+                      <div style={styles.intentText}>
+                        <div style={{ ...styles.intentLabel, color: acc.c }}>{intent.fullLabel}</div>
+                        <div style={styles.intentHint} className="wn-intent-hint">
+                          {intent.hint}
+                        </div>
+                      </div>
                     </div>
                     {isActive ? (
-                      <div className="wn-spinner" style={styles.spinner} />
+                      <div className="wn-spinner" style={{ ...styles.spinner, borderTopColor: acc.c }} />
                     ) : (
-                      <div style={styles.intentArrow}>→</div>
+                      <div className="wn-intent-arrow" style={{ ...styles.intentArrow, color: acc.c }}>
+                        →
+                      </div>
                     )}
                   </button>
                 );
@@ -588,102 +689,52 @@ export default function App() {
           </div>
         )}
 
-        {step === "clarify" && (
-          <div style={styles.inputCard}>
-            <button
-              style={styles.backLink}
-              onClick={() => setStep("intent")}
-              disabled={clarifyLoading}
-            >
-              ← Back
-            </button>
-            <div style={styles.intentHeading}>Quick question</div>
-            <div style={styles.intentSub}>{clarifyQuestion}</div>
-
-            <textarea
-              className="wn-textarea"
-              style={styles.textarea}
-              placeholder="Type your answer..."
-              value={clarifyAnswer}
-              onChange={(e) => setClarifyAnswer(e.target.value)}
-              rows={3}
-            />
-
-            {error && <div style={styles.errorBox}>{error}</div>}
-
-            <button
-              className="wn-btn"
-              style={{
-                ...styles.primaryBtn,
-                ...(clarifyAnswer.trim() ? {} : styles.btnDisabled),
-              }}
-              disabled={!clarifyAnswer.trim() || clarifyLoading}
-              onClick={submitClarifyAnswer}
-            >
-              {clarifyLoading ? "Thinking…" : "Continue →"}
-            </button>
-          </div>
-        )}
-
         {step === "result" && result && (
           <div style={styles.results}>
-            <AnswerBody
-              result={result}
-              colors={colors}
-              styles={styles}
-              showWhy={!!whyOpen.main}
-              onToggleWhy={() => setWhyOpen((w) => ({ ...w, main: !w.main }))}
-              editable
-              onEditResponse={(text) => setResult({ ...result, suggestedResponse: text })}
-              onCopy={() => copyText(result.suggestedResponse, "main")}
-              copied={copiedKey === "main"}
-            />
+            <ResultCard styles={styles} eyebrow="WHAT HAPPENED" accent={colors.teal} accentSoft={colors.tealSoft}>
+              <p style={styles.meaningText}>{result.whatHappened}</p>
+            </ResultCard>
 
-            {followUps.map((f, i) => {
-              const key = `f${i}`;
-              return (
-                <div key={key} style={styles.followUpBlock}>
-                  <div style={styles.followUpQuestion}>{f.question}</div>
-                  <AnswerBody
-                    result={f.result}
-                    colors={colors}
-                    styles={styles}
-                    showWhy={!!whyOpen[key]}
-                    onToggleWhy={() => setWhyOpen((w) => ({ ...w, [key]: !w[key] }))}
-                    editable={false}
-                    onCopy={() => copyText(f.result.suggestedResponse, key)}
-                    copied={copiedKey === key}
-                  />
-                </div>
-              );
-            })}
+            <ResultCard styles={styles} eyebrow="WHAT NOW?" accent={colors.ink} accentSoft={colors.inkSoft2} delay={0.06}>
+              <ol style={styles.actionList}>
+                {(result.actions || []).map((a, i) => (
+                  <li key={i} style={styles.actionItem}>
+                    <span style={styles.actionNum}>{i + 1}</span>
+                    <span>{a}</span>
+                  </li>
+                ))}
+              </ol>
+            </ResultCard>
 
-            <div style={styles.followUpInputRow}>
-              <input
-                style={styles.followUpInputBox}
-                placeholder="Ask a follow-up, e.g. what if I already clicked it?"
-                value={followUpInput}
-                onChange={(e) => setFollowUpInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitFollowUp()}
-                disabled={followUpLoading}
-              />
-              <button
-                style={{
-                  ...styles.followUpSendBtn,
-                  ...(followUpLoading || !followUpInput.trim() ? styles.btnDisabled : {}),
-                }}
-                onClick={submitFollowUp}
-                disabled={followUpLoading || !followUpInput.trim()}
-              >
-                {followUpLoading ? "…" : "Ask"}
-              </button>
-            </div>
+            {result.watchouts && result.watchouts.length > 0 && (
+              <ResultCard styles={styles} eyebrow="⚠️ WATCH OUT" accent={colors.amber} accentSoft={colors.amberSoft} delay={0.12}>
+                <ul style={styles.watchList}>
+                  {result.watchouts.map((w, i) => (
+                    <li key={i} style={styles.watchItem}>
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              </ResultCard>
+            )}
 
-            {error && <div style={styles.errorBox}>{error}</div>}
+            {result.needsResponse && result.suggestedResponse && (
+              <ResultCard styles={styles} eyebrow="💬 REPLY" accent={colors.teal} accentSoft={colors.tealSoft} delay={0.18}>
+                <textarea
+                  style={styles.responseBox}
+                  value={result.suggestedResponse}
+                  onChange={(e) => setResult({ ...result, suggestedResponse: e.target.value })}
+                  rows={4}
+                />
+                <button style={styles.copyBtn} onClick={copyResponse}>
+                  {copied ? "Copied" : "Copy reply"}
+                </button>
+              </ResultCard>
+            )}
 
             <div style={styles.disclaimer}>
-              This gives you a fast, plain read — not legal, medical, or financial advice.
-              For anything with real stakes, double-check with a professional.
+              This gives you a fast, plain read — not legal, medical, or financial advice. For
+              anything with real stakes, double-check with a professional.
             </div>
 
             <button style={styles.secondaryBtn} onClick={askSomethingElse}>
@@ -695,162 +746,36 @@ export default function App() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
 
-function AnswerBody({ result, colors, styles, showWhy, onToggleWhy, editable, onEditResponse, onCopy, copied }) {
-  return (
-    <>
-      <ResultCard styles={styles} eyebrow="WHAT HAPPENED" accent={colors.teal} accentSoft={colors.tealSoft}>
-        <div style={{ display: "flex", alignItems: "flex-start", flexWrap: "wrap", gap: 4 }}>
-          <p style={{ ...styles.meaningText, flex: 1, minWidth: 180, margin: 0 }}>{result.whatHappened}</p>
-          <ConfidenceBadge level={result.confidence} colors={colors} />
-        </div>
-        <SimpleChart chart={result.chart} colors={colors} />
-        <WhySection why={result.why} colors={colors} isOpen={showWhy} onToggle={onToggleWhy} />
-      </ResultCard>
-
-      {result.actions && result.actions.length > 0 && (
-        <ResultCard styles={styles} eyebrow="WHAT NOW?" accent={colors.ink} accentSoft={colors.inkSoft2} delay={0.06}>
-          <ol style={styles.actionList}>
-            {result.actions.map((a, i) => (
-              <li key={i} style={styles.actionItem}>
-                <span style={styles.actionNum}>{i + 1}</span>
-                <span>{a}</span>
-              </li>
-            ))}
-          </ol>
-        </ResultCard>
-      )}
-
-      {result.watchouts && result.watchouts.length > 0 && (
-        <ResultCard
-          styles={styles}
-          eyebrow="⚠️ WATCH OUT"
-          accent={colors.amber}
-          accentSoft={colors.amberSoft}
-          delay={0.12}
-        >
-          <ul style={styles.watchList}>
-            {result.watchouts.map((w, i) => (
-              <li key={i} style={styles.watchItem}>
-                {w}
-              </li>
-            ))}
-          </ul>
-        </ResultCard>
-      )}
-
-      {result.needsResponse && result.suggestedResponse && (
-        <ResultCard styles={styles} eyebrow="💬 REPLY" accent={colors.teal} accentSoft={colors.tealSoft} delay={0.18}>
-          {editable ? (
-            <textarea
-              style={styles.responseBox}
-              value={result.suggestedResponse}
-              onChange={(e) => onEditResponse(e.target.value)}
-              rows={4}
-            />
-          ) : (
-            <p style={{ ...styles.meaningText, whiteSpace: "pre-wrap", margin: 0 }}>{result.suggestedResponse}</p>
-          )}
-          <button style={styles.copyBtn} onClick={onCopy}>
-            {copied ? "Copied" : "Copy reply"}
-          </button>
-        </ResultCard>
-      )}
-    </>
-  );
-}
-
-function ConfidenceBadge({ level, colors }) {
-  if (!level) return null;
-  const map = {
-    high: { label: "High confidence", color: colors.teal, bg: colors.tealSoft },
-    medium: { label: "Medium confidence", color: colors.amber, bg: colors.amberSoft },
-    low: { label: "Low confidence", color: colors.red, bg: colors.redSoft },
-  };
-  const cfg = map[level];
-  if (!cfg) return null;
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        fontFamily: "'IBM Plex Mono', monospace",
-        fontSize: 10.5,
-        fontWeight: 500,
-        letterSpacing: "0.05em",
-        color: cfg.color,
-        background: cfg.bg,
-        borderRadius: 100,
-        padding: "3px 10px",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {cfg.label}
-    </span>
-  );
-}
-
-function SimpleChart({ chart, colors }) {
-  if (!chart || !Array.isArray(chart.items) || chart.items.length === 0) return null;
-  const max = Math.max(...chart.items.map((i) => Number(i.value) || 0), 1);
-  return (
-    <div style={{ marginTop: 14 }}>
-      {chart.title && (
-        <div style={{ fontSize: 12, fontWeight: 500, color: colors.inkSoft, marginBottom: 9 }}>{chart.title}</div>
-      )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-        {chart.items.map((item, i) => {
-          const pct = Math.max(4, (Number(item.value) || 0) / max * 100);
-          return (
-            <div key={i}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: 12.5,
-                  color: colors.ink,
-                  marginBottom: 3,
-                }}
-              >
-                <span>{item.label}</span>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: colors.inkSoft }}>{item.value}</span>
-              </div>
-              <div style={{ height: 8, background: colors.tealSoft, borderRadius: 5, overflow: "hidden" }}>
-                <div style={{ width: `${pct}%`, height: "100%", background: colors.teal, borderRadius: 5 }} />
-              </div>
-            </div>
-          );
-        })}
+      {/* Mobile-only bottom nav, matches the reference phone mock */}
+      <div style={styles.bottomNav} className="wn-bottomnav">
+        <button style={styles.navItem} onClick={startOver}>
+          <span style={styles.navIcon}>🏠</span>
+          <span>Home</span>
+        </button>
+        <button style={styles.navFab} onClick={startOver} aria-label="Start a new check">
+          +
+        </button>
+        <button style={styles.navItem} onClick={() => setShowAbout(true)}>
+          <span style={styles.navIcon}>ℹ️</span>
+          <span>About</span>
+        </button>
       </div>
-    </div>
-  );
-}
 
-function WhySection({ why, colors, isOpen, onToggle }) {
-  if (!why) return null;
-  return (
-    <div style={{ marginTop: 13 }}>
-      <button
-        onClick={onToggle}
-        style={{
-          background: "none",
-          border: `1px solid ${colors.line}`,
-          borderRadius: 100,
-          padding: "5px 12px",
-          fontSize: 12.5,
-          fontFamily: "'Inter', sans-serif",
-          color: colors.teal,
-          cursor: "pointer",
-        }}
-      >
-        {isOpen ? "Hide why" : "Why?"}
-      </button>
-      {isOpen && (
-        <p style={{ fontSize: 13.5, lineHeight: 1.55, color: colors.inkSoft, marginTop: 9, marginBottom: 0 }}>
-          {why}
-        </p>
+      {showAbout && (
+        <div style={styles.aboutOverlay} onClick={() => setShowAbout(false)}>
+          <div style={styles.aboutCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.aboutTitle}>About What Now?</div>
+            <p style={styles.aboutText}>
+              Paste a confusing message, screenshot, or document, tell us what you need, and
+              get a fast, plain answer with clear next steps. No accounts, no clutter — just
+              understand it and know what to do.
+            </p>
+            <button style={styles.aboutClose} onClick={() => setShowAbout(false)}>
+              Got it
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -858,14 +783,7 @@ function WhySection({ why, colors, isOpen, onToggle }) {
 
 function ResultCard({ eyebrow, accent, accentSoft, children, delay = 0, styles }) {
   return (
-    <div
-      className="wn-card"
-      style={{
-        ...styles.resultCard,
-        borderLeft: `4px solid ${accent}`,
-        animationDelay: `${delay}s`,
-      }}
-    >
+    <div className="wn-card" style={{ ...styles.resultCard, borderLeft: `4px solid ${accent}`, animationDelay: `${delay}s` }}>
       <div style={{ ...styles.resultEyebrow, color: accent, background: accentSoft }}>{eyebrow}</div>
       {children}
     </div>
@@ -873,33 +791,29 @@ function ResultCard({ eyebrow, accent, accentSoft, children, delay = 0, styles }
 }
 
 const lightColors = {
-  paper: "#F3F4EF",
+  paper: "#F5F3FC",
   paperRaised: "#FFFFFF",
-  ink: "#16211D",
-  inkSoft: "#4B5750",
-  inkSoft2: "#2E3833",
-  line: "#DBDDD3",
-  teal: "#2B6E62",
-  tealSoft: "#E4EEEA",
-  amber: "#B65A25",
-  amberSoft: "#F3E2D2",
-  red: "#B33A3A",
-  redSoft: "#F5DEDE",
+  ink: "#17152A",
+  inkSoft: "#6B6980",
+  inkSoft2: "#3D3A52",
+  line: "#E5E1F5",
+  teal: "#6D4AFF", // primary purple accent (kept the "teal" key name to limit refactor surface)
+  tealSoft: "#EEEAFC",
+  amber: "#DC5B2E",
+  amberSoft: "#FCEBE3",
 };
 
 const darkColors = {
-  paper: "#1B1F1C",
-  paperRaised: "#242925",
-  ink: "#EDEFE9",
-  inkSoft: "#A6ADA3",
-  inkSoft2: "#D7DBD2",
-  line: "#383D37",
-  teal: "#5FAE9B",
-  tealSoft: "#26362F",
-  amber: "#E0975E",
-  amberSoft: "#3B2E20",
-  red: "#E17878",
-  redSoft: "#3B2323",
+  paper: "#141225",
+  paperRaised: "#1E1B33",
+  ink: "#F1EFFB",
+  inkSoft: "#A7A3C2",
+  inkSoft2: "#D8D5EE",
+  line: "#332F52",
+  teal: "#A78BFA",
+  tealSoft: "#2B2650",
+  amber: "#F0916B",
+  amberSoft: "#3A2A20",
 };
 
 function buildStyles(colors) {
@@ -910,91 +824,170 @@ function buildStyles(colors) {
       background: colors.paper,
       fontFamily: "'Inter', -apple-system, sans-serif",
       color: colors.ink,
-      padding: "28px 16px 60px",
+      padding: "28px 16px 100px",
+      position: "relative",
+      overflowX: "hidden",
       transition: "background 0.2s ease, color 0.2s ease",
+    },
+    blobTop: {
+      position: "absolute",
+      top: -60,
+      left: -60,
+      width: 220,
+      height: 220,
+      borderRadius: "50%",
+      background: colors.tealSoft,
+      filter: "blur(50px)",
+      opacity: 0.7,
+      pointerEvents: "none",
+      zIndex: 0,
+    },
+    blobBottom: {
+      position: "absolute",
+      top: 260,
+      right: -70,
+      width: 200,
+      height: 200,
+      borderRadius: "50%",
+      background: colors.tealSoft,
+      filter: "blur(55px)",
+      opacity: 0.5,
+      pointerEvents: "none",
+      zIndex: 0,
     },
     container: {
       maxWidth: 560,
       margin: "0 auto",
+      position: "relative",
+      zIndex: 1,
     },
     headerRow: {
       display: "flex",
-      alignItems: "flex-start",
+      alignItems: "center",
       justifyContent: "space-between",
       gap: 12,
-      marginBottom: 24,
+      marginBottom: 22,
     },
-    themeToggle: {
-      flexShrink: 0,
-      width: 40,
-      height: 40,
-      borderRadius: 10,
-      border: `1px solid ${colors.line}`,
-      background: colors.paperRaised,
-      fontSize: 17,
+    logoRow: { display: "flex", alignItems: "center", gap: 9 },
+    logoMark: {
+      width: 30,
+      height: 30,
+      borderRadius: 8,
+      background: colors.teal,
+      color: "#FFFFFF",
+      fontFamily: "'Fraunces', serif",
+      fontWeight: 600,
+      fontSize: 16,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      flexShrink: 0,
+    },
+    logoWordmark: {
+      fontFamily: "'Fraunces', serif",
+      fontWeight: 600,
+      fontSize: 19,
+      color: colors.ink,
+      letterSpacing: "-0.01em",
+    },
+    themeToggle: {
+      flexShrink: 0,
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "8px 14px",
+      borderRadius: 100,
+      border: `1px solid ${colors.line}`,
+      background: colors.paperRaised,
+      fontSize: 12.5,
+      fontWeight: 500,
+      color: colors.inkSoft,
       cursor: "pointer",
     },
-    eyebrow: {
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 11,
-      letterSpacing: "0.14em",
-      color: colors.teal,
-      marginBottom: 8,
-      fontWeight: 500,
-    },
-    title: {
+    hero: { marginBottom: 20, paddingRight: 8 },
+    heroHeadline: {
       fontFamily: "'Fraunces', serif",
-      fontSize: 40,
+      fontSize: 30,
       fontWeight: 600,
       margin: 0,
+      lineHeight: 1.12,
       letterSpacing: "-0.01em",
-      lineHeight: 1.05,
       color: colors.ink,
     },
+    heroSub: {
+      fontFamily: "'Fraunces', serif",
+      fontSize: 30,
+      fontWeight: 600,
+      margin: "1px 0 10px",
+      lineHeight: 1.12,
+      letterSpacing: "-0.01em",
+      color: colors.teal,
+    },
+    heroText: { fontSize: 14.5, lineHeight: 1.5, color: colors.inkSoft, margin: 0, maxWidth: 440 },
     inputCard: {
       background: colors.paperRaised,
       border: `1px solid ${colors.line}`,
-      borderRadius: 14,
+      borderRadius: 16,
       padding: 18,
+      boxShadow: "0 12px 32px rgba(109,74,255,0.06)",
     },
-    emptyState: {
-      fontSize: 14.5,
-      lineHeight: 1.5,
+    keyBox: { marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${colors.line}` },
+    keyLabel: {
+      display: "block",
+      fontFamily: "'IBM Plex Mono', monospace",
+      fontSize: 11,
+      letterSpacing: "0.08em",
       color: colors.inkSoft,
-      margin: "0 0 16px",
+      marginBottom: 6,
     },
-    tabRow: {
-      display: "flex",
-      gap: 4,
+    keyRow: { display: "flex", gap: 6 },
+    keyInput: {
+      flex: 1,
+      minWidth: 0,
+      border: `1px solid ${colors.line}`,
+      borderRadius: 8,
+      padding: "9px 11px",
+      fontSize: 14,
+      fontFamily: "'IBM Plex Mono', monospace",
+      color: colors.ink,
       background: colors.paper,
-      padding: 4,
-      borderRadius: 10,
-      marginBottom: 14,
     },
+    keyShowBtn: {
+      flexShrink: 0,
+      padding: "0 14px",
+      fontSize: 12.5,
+      fontWeight: 500,
+      fontFamily: "'Inter', sans-serif",
+      border: `1px solid ${colors.line}`,
+      borderRadius: 8,
+      background: colors.paperRaised,
+      color: colors.inkSoft,
+      cursor: "pointer",
+    },
+    keyHint: { fontSize: 11.5, color: colors.inkSoft, marginTop: 6, lineHeight: 1.4 },
+    keyLink: { color: colors.teal, fontWeight: 500 },
+    tabRow: { display: "flex", gap: 4, background: colors.paper, padding: 4, borderRadius: 100, marginBottom: 14 },
     tab: {
       flex: 1,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
       padding: "9px 6px",
       fontSize: 12.5,
       fontWeight: 500,
       fontFamily: "'Inter', sans-serif",
       border: "none",
-      borderRadius: 8,
+      borderRadius: 100,
       background: "transparent",
       color: colors.inkSoft,
       cursor: "pointer",
     },
-    tabActive: {
-      background: colors.paperRaised,
-      color: colors.ink,
-      boxShadow: "0 1px 2px rgba(0,0,0,0.12)",
-    },
+    tabActive: { background: colors.tealSoft, color: colors.teal, fontWeight: 600 },
     textarea: {
       width: "100%",
       border: `1px solid ${colors.line}`,
-      borderRadius: 10,
+      borderRadius: 12,
       padding: 14,
       fontSize: 15,
       fontFamily: "'Inter', sans-serif",
@@ -1005,7 +998,7 @@ function buildStyles(colors) {
     },
     dropzone: {
       border: `1.5px dashed ${colors.line}`,
-      borderRadius: 10,
+      borderRadius: 12,
       padding: "28px 16px",
       textAlign: "center",
       cursor: "pointer",
@@ -1016,33 +1009,11 @@ function buildStyles(colors) {
       alignItems: "center",
       justifyContent: "center",
     },
-    dropIcon: {
-      fontSize: 22,
-      color: colors.teal,
-      marginBottom: 6,
-    },
-    dropText: {
-      fontSize: 14.5,
-      fontWeight: 500,
-      color: colors.ink,
-    },
-    dropSubtext: {
-      fontSize: 12.5,
-      color: colors.inkSoft,
-      marginTop: 2,
-    },
-    previewWrap: {
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      gap: 6,
-    },
-    previewImg: {
-      maxHeight: 140,
-      maxWidth: "100%",
-      borderRadius: 8,
-      border: `1px solid ${colors.line}`,
-    },
+    dropIcon: { fontSize: 22, color: colors.teal, marginBottom: 6 },
+    dropText: { fontSize: 14.5, fontWeight: 500, color: colors.ink },
+    dropSubtext: { fontSize: 12.5, color: colors.inkSoft, marginTop: 2 },
+    previewWrap: { display: "flex", flexDirection: "column", alignItems: "center", gap: 6 },
+    previewImg: { maxHeight: 140, maxWidth: "100%", borderRadius: 8, border: `1px solid ${colors.line}` },
     docBadge: {
       fontFamily: "'IBM Plex Mono', monospace",
       fontSize: 12,
@@ -1053,51 +1024,37 @@ function buildStyles(colors) {
       padding: "6px 12px",
       letterSpacing: "0.05em",
     },
-    previewName: {
-      fontSize: 12,
-      color: colors.inkSoft,
-    },
-    smallLinkBtn: {
-      background: "none",
-      border: "none",
-      color: colors.amber,
-      fontSize: 12.5,
+    previewName: { fontSize: 12, color: colors.inkSoft },
+    smallLinkBtn: { background: "none", border: "none", color: colors.amber, fontSize: 12.5, cursor: "pointer", textDecoration: "underline", padding: 0 },
+    toolRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 12 },
+    toolIcons: { display: "flex", gap: 6 },
+    toolBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 10,
+      border: `1px solid ${colors.line}`,
+      background: colors.paper,
+      fontSize: 15,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
       cursor: "pointer",
-      textDecoration: "underline",
-      padding: 0,
     },
-    errorBox: {
-      marginTop: 10,
-      fontSize: 13,
-      color: colors.amber,
-      background: colors.amberSoft,
-      borderRadius: 8,
-      padding: "9px 12px",
-    },
+    errorBox: { marginTop: 10, fontSize: 13, color: colors.amber, background: colors.amberSoft, borderRadius: 8, padding: "9px 12px" },
     primaryBtn: {
-      width: "100%",
-      marginTop: 14,
-      padding: "13px 16px",
-      background: colors.ink,
-      color: colors.paper,
+      padding: "12px 22px",
+      background: colors.teal,
+      color: "#FFFFFF",
       border: "none",
       borderRadius: 10,
-      fontSize: 15.5,
+      fontSize: 14.5,
       fontWeight: 600,
       fontFamily: "'Inter', sans-serif",
       cursor: "pointer",
+      whiteSpace: "nowrap",
     },
-    btnDisabled: {
-      opacity: 0.4,
-      cursor: "not-allowed",
-    },
-    scanWrap: {
-      position: "relative",
-      height: 2,
-      overflow: "hidden",
-      marginTop: 8,
-      borderRadius: 2,
-    },
+    btnDisabled: { opacity: 0.4, cursor: "not-allowed" },
+    scanWrap: { position: "relative", height: 2, overflow: "hidden", marginTop: 8, borderRadius: 2 },
     scanline: {
       position: "absolute",
       left: 0,
@@ -1106,31 +1063,10 @@ function buildStyles(colors) {
       background: `linear-gradient(90deg, transparent, ${colors.teal}, transparent)`,
       animation: "wn-scan 1.3s ease-in-out infinite",
     },
-    loadingText: {
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 12,
-      letterSpacing: "0.06em",
-      color: colors.teal,
-      textAlign: "center",
-      marginTop: 14,
-    },
-    exampleWrap: {
-      marginTop: 18,
-      paddingTop: 16,
-      borderTop: `1px solid ${colors.line}`,
-    },
-    exampleLabel: {
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 11,
-      letterSpacing: "0.1em",
-      color: colors.inkSoft,
-      marginBottom: 9,
-    },
-    chipRow: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 8,
-    },
+    loadingText: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.06em", color: colors.teal, textAlign: "center", marginTop: 14 },
+    exampleWrap: { marginTop: 18, paddingTop: 16, borderTop: `1px solid ${colors.line}` },
+    exampleLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", color: colors.inkSoft, marginBottom: 9 },
+    chipRow: { display: "flex", flexWrap: "wrap", gap: 8 },
     chip: {
       padding: "7px 12px",
       fontSize: 13,
@@ -1141,33 +1077,18 @@ function buildStyles(colors) {
       color: colors.ink,
       cursor: "pointer",
     },
-    backLink: {
-      background: "none",
-      border: "none",
+    footerTagline: {
+      textAlign: "center",
+      fontSize: 12.5,
       color: colors.inkSoft,
-      fontSize: 13,
-      fontFamily: "'Inter', sans-serif",
-      cursor: "pointer",
-      padding: 0,
-      marginBottom: 16,
+      marginTop: 20,
+      lineHeight: 1.5,
+      padding: "0 20px",
     },
-    intentHeading: {
-      fontFamily: "'Fraunces', serif",
-      fontSize: 22,
-      fontWeight: 600,
-      margin: "0 0 4px",
-      color: colors.ink,
-    },
-    intentSub: {
-      fontSize: 13.5,
-      color: colors.inkSoft,
-      marginBottom: 16,
-    },
-    intentList: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 9,
-    },
+    backLink: { background: "none", border: "none", color: colors.inkSoft, fontSize: 13, fontFamily: "'Inter', sans-serif", cursor: "pointer", padding: 0, marginBottom: 16 },
+    intentHeading: { fontFamily: "'Fraunces', serif", fontSize: 22, fontWeight: 600, margin: "0 0 4px", color: colors.ink, textAlign: "center" },
+    intentSub: { fontSize: 13.5, color: colors.inkSoft, marginBottom: 18, textAlign: "center" },
+    intentList: { display: "flex", flexDirection: "column", gap: 9 },
     intentCard: {
       display: "flex",
       alignItems: "center",
@@ -1177,84 +1098,22 @@ function buildStyles(colors) {
       textAlign: "left",
       padding: "13px 15px",
       border: `1px solid ${colors.line}`,
-      borderRadius: 10,
-      background: colors.paper,
+      borderRadius: 12,
+      background: colors.paperRaised,
       cursor: "pointer",
     },
-    intentCardActive: {
-      borderColor: colors.teal,
-      background: colors.tealSoft,
-    },
-    intentText: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 2,
-    },
-    intentLabel: {
-      fontSize: 15,
-      fontWeight: 600,
-      color: colors.ink,
-      fontFamily: "'Inter', sans-serif",
-    },
-    intentHint: {
-      fontSize: 12.5,
-      color: colors.inkSoft,
-    },
-    intentArrow: {
-      fontSize: 16,
-      color: colors.teal,
-      flexShrink: 0,
-    },
-    spinner: {
-      width: 16,
-      height: 16,
-      borderRadius: "50%",
-      border: `2px solid ${colors.tealSoft}`,
-      borderTopColor: colors.teal,
-      flexShrink: 0,
-    },
-    results: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 14,
-    },
-    resultCard: {
-      background: colors.paperRaised,
-      borderRadius: 10,
-      padding: "16px 18px 18px",
-      border: `1px solid ${colors.line}`,
-    },
-    resultEyebrow: {
-      display: "inline-block",
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 10.5,
-      letterSpacing: "0.1em",
-      fontWeight: 500,
-      padding: "3px 8px",
-      borderRadius: 5,
-      marginBottom: 11,
-    },
-    meaningText: {
-      fontSize: 15.5,
-      lineHeight: 1.6,
-      margin: 0,
-      color: colors.ink,
-    },
-    actionList: {
-      listStyle: "none",
-      margin: 0,
-      padding: 0,
-      display: "flex",
-      flexDirection: "column",
-      gap: 11,
-    },
-    actionItem: {
-      display: "flex",
-      gap: 11,
-      fontSize: 15,
-      lineHeight: 1.5,
-      color: colors.ink,
-    },
+    intentIcon: { width: 34, height: 34, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 },
+    intentText: { display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 },
+    intentLabel: { fontSize: 15, fontWeight: 600, fontFamily: "'Inter', sans-serif" },
+    intentHint: { fontSize: 12.5, color: colors.inkSoft },
+    intentArrow: { fontSize: 16, flexShrink: 0 },
+    spinner: { width: 16, height: 16, borderRadius: "50%", border: `2px solid ${colors.tealSoft}`, flexShrink: 0 },
+    results: { display: "flex", flexDirection: "column", gap: 14 },
+    resultCard: { background: colors.paperRaised, borderRadius: 12, padding: "16px 18px 18px", border: `1px solid ${colors.line}` },
+    resultEyebrow: { display: "inline-block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: "0.1em", fontWeight: 500, padding: "3px 8px", borderRadius: 5, marginBottom: 11 },
+    meaningText: { fontSize: 15.5, lineHeight: 1.6, margin: 0, color: colors.ink },
+    actionList: { listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 11 },
+    actionItem: { display: "flex", gap: 11, fontSize: 15, lineHeight: 1.5, color: colors.ink },
     actionNum: {
       fontFamily: "'IBM Plex Mono', monospace",
       fontSize: 12.5,
@@ -1270,18 +1129,8 @@ function buildStyles(colors) {
       flexShrink: 0,
       marginTop: 1,
     },
-    watchList: {
-      margin: 0,
-      padding: "0 0 0 18px",
-      display: "flex",
-      flexDirection: "column",
-      gap: 8,
-    },
-    watchItem: {
-      fontSize: 15,
-      lineHeight: 1.5,
-      color: colors.ink,
-    },
+    watchList: { margin: 0, padding: "0 0 0 18px", display: "flex", flexDirection: "column", gap: 8 },
+    watchItem: { fontSize: 15, lineHeight: 1.5, color: colors.ink },
     responseBox: {
       width: "100%",
       border: `1px solid ${colors.line}`,
@@ -1305,76 +1154,78 @@ function buildStyles(colors) {
       borderRadius: 8,
       cursor: "pointer",
     },
-    disclaimer: {
-      fontSize: 12,
-      color: colors.inkSoft,
-      textAlign: "center",
-      lineHeight: 1.5,
-      padding: "2px 12px",
+    disclaimer: { fontSize: 12, color: colors.inkSoft, textAlign: "center", lineHeight: 1.5, padding: "2px 12px" },
+    secondaryBtn: { width: "100%", padding: "12px 16px", background: colors.ink, border: "none", borderRadius: 10, fontSize: 14.5, fontWeight: 600, color: colors.paper, cursor: "pointer" },
+    tertiaryBtn: { width: "100%", padding: "12px 16px", background: "transparent", border: `1px solid ${colors.line}`, borderRadius: 10, fontSize: 14.5, fontWeight: 500, color: colors.ink, cursor: "pointer" },
+    bottomNav: {
+      position: "fixed",
+      bottom: 0,
+      left: 0,
+      right: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-around",
+      background: colors.paperRaised,
+      borderTop: `1px solid ${colors.line}`,
+      padding: "10px 20px calc(10px + env(safe-area-inset-bottom))",
+      zIndex: 5,
     },
-    secondaryBtn: {
-      width: "100%",
-      padding: "12px 16px",
-      background: colors.ink,
-      border: "none",
-      borderRadius: 10,
-      fontSize: 14.5,
-      fontWeight: 600,
-      color: colors.paper,
-      cursor: "pointer",
-    },
-    tertiaryBtn: {
-      width: "100%",
-      padding: "12px 16px",
-      background: "transparent",
-      border: `1px solid ${colors.line}`,
-      borderRadius: 10,
-      fontSize: 14.5,
-      fontWeight: 500,
-      color: colors.ink,
-      cursor: "pointer",
-    },
-    followUpBlock: {
+    navItem: {
       display: "flex",
       flexDirection: "column",
-      gap: 10,
-      paddingTop: 4,
+      alignItems: "center",
+      gap: 2,
+      background: "none",
+      border: "none",
+      color: colors.inkSoft,
+      fontSize: 11,
+      fontWeight: 500,
+      cursor: "pointer",
     },
-    followUpQuestion: {
-      alignSelf: "flex-end",
-      background: colors.ink,
-      color: colors.paper,
-      fontSize: 13.5,
-      lineHeight: 1.4,
-      padding: "9px 14px",
-      borderRadius: "14px 14px 4px 14px",
-      maxWidth: "85%",
+    navIcon: { fontSize: 18 },
+    navFab: {
+      width: 48,
+      height: 48,
+      borderRadius: "50%",
+      background: colors.teal,
+      color: "#FFFFFF",
+      border: "none",
+      fontSize: 24,
+      lineHeight: 1,
+      marginTop: -22,
+      boxShadow: "0 8px 18px rgba(109,74,255,0.35)",
+      cursor: "pointer",
     },
-    followUpInputRow: {
+    aboutOverlay: {
+      position: "fixed",
+      inset: 0,
+      background: "rgba(20,18,37,0.45)",
       display: "flex",
-      gap: 8,
-      marginTop: 2,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      zIndex: 10,
     },
-    followUpInputBox: {
-      flex: 1,
-      border: `1px solid ${colors.line}`,
-      borderRadius: 10,
-      padding: "10px 12px",
-      fontSize: 14,
-      fontFamily: "'Inter', sans-serif",
-      color: colors.ink,
+    aboutCard: {
       background: colors.paperRaised,
+      borderRadius: 16,
+      padding: 22,
+      maxWidth: 360,
+      width: "100%",
+      border: `1px solid ${colors.line}`,
     },
-    followUpSendBtn: {
-      padding: "10px 18px",
-      background: colors.ink,
-      color: colors.paper,
+    aboutTitle: { fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, color: colors.ink, marginBottom: 8 },
+    aboutText: { fontSize: 14, lineHeight: 1.55, color: colors.inkSoft, margin: "0 0 16px" },
+    aboutClose: {
+      width: "100%",
+      padding: "11px 16px",
+      background: colors.teal,
+      color: "#FFFFFF",
       border: "none",
       borderRadius: 10,
       fontSize: 14,
       fontWeight: 600,
       cursor: "pointer",
-      flexShrink: 0,
     },
   };
 }
