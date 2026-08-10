@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback } from "react";
-import mammoth from "mammoth";
 
 const EXAMPLES = [
   {
@@ -95,7 +94,11 @@ const INTENT_ACCENTS = {
   plan: { light: { c: "#4B4B63", s: "#ECEAF5" }, dark: { c: "#B9B6E0", s: "#2A2748" } },
 };
 
-const SYSTEM_PROMPT = `You are "What Now?". You read confusing messages, screenshots, documents, and emails for a friend and tell them what's going on and what to do. You sound like a smart friend texting them back — not a robot, not a lawyer, not a teacher, not a tech support agent.
+// NOTE: This prompt and the parts-builder below no longer run in the browser.
+// Move both to your Express backend (the route behind /api/analyze) so the
+// Gemini key and prompt stay server-side. Kept here only as reference —
+// safe to delete once they're ported over.
+const SYSTEM_PROMPT_REFERENCE_ONLY = `You are "What Now?". You read confusing messages, screenshots, documents, and emails for a friend and tell them what's going on and what to do. You sound like a smart friend texting them back — not a robot, not a lawyer, not a teacher, not a tech support agent.
 
 Respond with ONLY valid JSON, no markdown fences, no preamble, matching exactly this shape:
 {
@@ -147,39 +150,29 @@ function buildGeminiParts(input, intent) {
   return parts;
 }
 
-async function analyzeContent(input, intent, apiKey) {
-  if (!apiKey || !apiKey.trim()) {
-    throw new Error("Add your Gemini API key above first.");
-  }
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(
-      apiKey.trim()
-    )}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts: buildGeminiParts(input, intent) }],
-        generationConfig: { maxOutputTokens: 400, responseMimeType: "application/json" },
-      }),
-    }
-  );
+async function analyzeContent(input, intent) {
+  // Calls your own Express backend, which holds the Gemini key server-side
+  // and proxies the request on. The backend owns SYSTEM_PROMPT and
+  // buildGeminiParts-equivalent logic now — nothing secret ships to the client.
+  const response = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input,
+      intent: { id: intent.id, fullLabel: intent.fullLabel, focus: intent.focus, forceReply: !!intent.forceReply },
+    }),
+  });
 
   if (!response.ok) {
-    if (response.status === 400 || response.status === 403) {
-      throw new Error("That API key didn't work. Check it and try again.");
+    if (response.status === 429) {
+      throw new Error("Too many requests right now. Try again in a moment.");
     }
     throw new Error("The analysis request failed. Try again.");
   }
 
-  const data = await response.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
-  const cleaned = raw.replace(/^```(json)?/i, "").replace(/```$/i, "").trim();
+  const parsed = await response.json();
 
   try {
-    const parsed = JSON.parse(cleaned);
     if (intent.forceReply) parsed.needsResponse = true;
     if (Array.isArray(parsed.actions)) parsed.actions = parsed.actions.slice(0, 3);
     if (Array.isArray(parsed.watchouts)) parsed.watchouts = parsed.watchouts.slice(0, 2);
@@ -209,8 +202,6 @@ function fileToText(file) {
 
 export default function WhatNowApp() {
   const [isDark, setIsDark] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [step, setStep] = useState("input"); // 'input' | 'intent' | 'result'
   const [mode, setMode] = useState("text"); // 'text' | 'image' | 'document'
@@ -230,7 +221,6 @@ export default function WhatNowApp() {
 
   const hasInput =
     mode === "text" ? textInput.trim().length > 0 : mode === "image" ? !!image : !!document;
-  const hasKey = apiKey.trim().length > 0;
   const currentInput = { mode, text: textInput, image, document };
 
   const runAnalysis = useCallback(
@@ -240,7 +230,7 @@ export default function WhatNowApp() {
       setLoading(true);
       setError("");
       try {
-        const data = await analyzeContent(input, intent, apiKey);
+        const data = await analyzeContent(input, intent);
         setResult(data);
         setStep("result");
       } catch (e) {
@@ -251,7 +241,7 @@ export default function WhatNowApp() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mode, textInput, image, document, apiKey]
+    [mode, textInput, image, document]
   );
 
   const handleImageFile = async (file) => {
@@ -274,6 +264,7 @@ export default function WhatNowApp() {
         setDocument({ kind: "pdf", base64, name: file.name, ext });
       } else if (ext === "docx") {
         const arrayBuffer = await file.arrayBuffer();
+        const mammoth = (await import("mammoth")).default;
         const { value } = await mammoth.extractRawText({ arrayBuffer });
         setDocument({ kind: "text", text: value, name: file.name, ext });
       } else if (ext === "txt") {
@@ -290,13 +281,9 @@ export default function WhatNowApp() {
   const selectedIntent = INTENTS.find((intent) => intent.id === selectedIntentId);
 
   const runSelectedIntent = () => {
-    if (!hasInput || !hasKey) return;
-    if (!selectedIntent) {
-      setError("Choose an option below before continuing.");
-      return;
-    }
+    if (!hasInput) return;
     setError("");
-    runAnalysis(selectedIntent);
+    runAnalysis(selectedIntent || INTENTS[0]);
   };
 
   const loadExample = (ex) => {
@@ -352,6 +339,8 @@ export default function WhatNowApp() {
         .wn-drop.dragging { border-color: ${colors.teal} !important; background: ${colors.tealSoft} !important; }
         .wn-intent { transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease; }
         .wn-intent:hover:not(:disabled) { border-color: ${colors.teal}; transform: translateY(-1px); }
+        .wn-action { transition: transform .15s ease, box-shadow .15s ease; }
+        .wn-action:active { transform: translateY(0); }
         .wn-tool:disabled { opacity: 0.45; cursor: not-allowed; }
         @keyframes wn-scan {
           0% { transform: translateY(-2px); opacity: 0; }
@@ -384,6 +373,9 @@ export default function WhatNowApp() {
           .wn-intent-card { flex-direction: column !important; align-items: center !important; text-align: center !important; gap: 10px !important; padding: 22px 12px !important; }
           .wn-intent-arrow { display: none !important; }
           .wn-intent-hint { text-align: center !important; }
+          .wn-container { max-width: 900px !important; }
+          .wn-hero { margin-bottom: 22px !important; }
+          .wn-input-card { padding: 22px !important; }
         }
       `}</style>
 
@@ -420,33 +412,6 @@ export default function WhatNowApp() {
             </div>
 
             <div style={styles.inputCard} className="wn-input-card">
-              <div style={styles.keyBox}>
-                <label style={styles.keyLabel} htmlFor="wn-gemini-key">
-                  Gemini API key
-                </label>
-                <div style={styles.keyRow}>
-                  <input
-                    id="wn-gemini-key"
-                    type={showKey ? "text" : "password"}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="Paste your key here"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    style={styles.keyInput}
-                  />
-                  <button type="button" style={styles.keyShowBtn} onClick={() => setShowKey((s) => !s)}>
-                    {showKey ? "Hide" : "Show"}
-                  </button>
-                </div>
-                <div style={styles.keyHint}>
-                  Stays in your browser for this session only, never saved.{" "}
-                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={styles.keyLink}>
-                    Get a free key
-                  </a>
-                </div>
-              </div>
-
               <div style={styles.tabRow} role="tablist">
                 <button
                   className="wn-tab"
@@ -606,8 +571,8 @@ export default function WhatNowApp() {
                 </div>
                 <button
                   className="wn-btn"
-                  style={{ ...styles.primaryBtn, ...(!hasInput || !hasKey ? styles.btnDisabled : {}) }}
-                  disabled={!hasInput || !hasKey || loading}
+                  style={{ ...styles.primaryBtn, ...(!hasInput ? styles.btnDisabled : {}) }}
+                  disabled={!hasInput || loading}
                   onClick={runSelectedIntent}
                 >
                   Continue →
@@ -615,9 +580,6 @@ export default function WhatNowApp() {
               </div>
 
               {error && <div style={styles.errorBox}>{error}</div>}
-              {!hasKey && hasInput && (
-                <div style={styles.errorBox}>Add your Gemini API key above to continue.</div>
-              )}
 
               <div style={styles.exampleWrap}>
                 <div style={styles.exampleLabel}>Or try an example</div>
@@ -628,6 +590,39 @@ export default function WhatNowApp() {
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+
+            <div style={styles.intentSection}>
+              <h3 style={styles.intentHeading}>What do you want to know?</h3>
+              <div className="wn-intent-list">
+                {INTENTS.map((intent) => {
+                  const accent = INTENT_ACCENTS[intent.id][isDark ? "dark" : "light"];
+                  const selected = selectedIntentId === intent.id;
+                  return (
+                    <button
+                      key={intent.id}
+                      type="button"
+                      className="wn-intent wn-action"
+                      onClick={() => setSelectedIntentId(intent.id)}
+                      style={{
+                        ...styles.intentCard,
+                        borderColor: selected ? accent.c : colors.line,
+                        background: selected ? accent.s : colors.paperRaised,
+                      }}
+                      aria-pressed={selected}
+                    >
+                      <span style={{ ...styles.intentIcon, color: accent.c, background: accent.s }}>
+                        {intent.icon}
+                      </span>
+                      <span style={styles.intentText}>
+                        <strong style={{ color: accent.c }}>{intent.label}</strong>
+                        <span style={styles.intentHint}>{intent.hint}</span>
+                      </span>
+                      <span className="wn-intent-arrow" style={{ color: accent.c }}>→</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -772,7 +767,7 @@ function buildStyles(colors) {
       background: colors.paper,
       fontFamily: "'Inter', -apple-system, sans-serif",
       color: colors.ink,
-      padding: "28px 16px 100px",
+      padding: "18px 14px 80px",
       position: "relative",
       overflowX: "hidden",
       transition: "background 0.2s ease, color 0.2s ease",
@@ -804,7 +799,7 @@ function buildStyles(colors) {
       zIndex: 0,
     },
     container: {
-      maxWidth: 560,
+      maxWidth: 900,
       margin: "0 auto",
       position: "relative",
       zIndex: 1,
@@ -855,7 +850,7 @@ function buildStyles(colors) {
     hero: { marginBottom: 20, paddingRight: 8 },
     heroHeadline: {
       fontFamily: "'Fraunces', serif",
-      fontSize: 30,
+      fontSize: 28,
       fontWeight: 600,
       margin: 0,
       lineHeight: 1.12,
@@ -864,56 +859,21 @@ function buildStyles(colors) {
     },
     heroSub: {
       fontFamily: "'Fraunces', serif",
-      fontSize: 30,
+      fontSize: 28,
       fontWeight: 600,
       margin: "1px 0 10px",
       lineHeight: 1.12,
       letterSpacing: "-0.01em",
       color: colors.teal,
     },
-    heroText: { fontSize: 14.5, lineHeight: 1.5, color: colors.inkSoft, margin: 0, maxWidth: 440 },
+    heroText: { fontSize: 13.5, lineHeight: 1.45, color: colors.inkSoft, margin: 0, maxWidth: 440 },
     inputCard: {
       background: colors.paperRaised,
       border: `1px solid ${colors.line}`,
-      borderRadius: 16,
-      padding: 18,
-      boxShadow: "0 12px 32px rgba(109,74,255,0.06)",
+      borderRadius: 14,
+      padding: 16,
+      boxShadow: "0 8px 24px rgba(109,74,255,0.06)",
     },
-    keyBox: { marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${colors.line}` },
-    keyLabel: {
-      display: "block",
-      fontFamily: "'IBM Plex Mono', monospace",
-      fontSize: 11,
-      letterSpacing: "0.08em",
-      color: colors.inkSoft,
-      marginBottom: 6,
-    },
-    keyRow: { display: "flex", gap: 6 },
-    keyInput: {
-      flex: 1,
-      minWidth: 0,
-      border: `1px solid ${colors.line}`,
-      borderRadius: 8,
-      padding: "9px 11px",
-      fontSize: 14,
-      fontFamily: "'IBM Plex Mono', monospace",
-      color: colors.ink,
-      background: colors.paper,
-    },
-    keyShowBtn: {
-      flexShrink: 0,
-      padding: "0 14px",
-      fontSize: 12.5,
-      fontWeight: 500,
-      fontFamily: "'Inter', sans-serif",
-      border: `1px solid ${colors.line}`,
-      borderRadius: 8,
-      background: colors.paperRaised,
-      color: colors.inkSoft,
-      cursor: "pointer",
-    },
-    keyHint: { fontSize: 11.5, color: colors.inkSoft, marginTop: 6, lineHeight: 1.4 },
-    keyLink: { color: colors.teal, fontWeight: 500 },
     tabRow: { display: "flex", gap: 4, background: colors.paper, padding: 4, borderRadius: 100, marginBottom: 14 },
     tab: {
       flex: 1,
@@ -937,7 +897,7 @@ function buildStyles(colors) {
       border: `1px solid ${colors.line}`,
       borderRadius: 12,
       padding: 14,
-      fontSize: 15,
+      fontSize: 14,
       fontFamily: "'Inter', sans-serif",
       lineHeight: 1.5,
       color: colors.ink,
@@ -990,7 +950,7 @@ function buildStyles(colors) {
     },
     errorBox: { marginTop: 10, fontSize: 13, color: colors.amber, background: colors.amberSoft, borderRadius: 8, padding: "9px 12px" },
     primaryBtn: {
-      padding: "12px 22px",
+      padding: "11px 19px",
       background: colors.teal,
       color: "#FFFFFF",
       border: "none",
@@ -1034,7 +994,7 @@ function buildStyles(colors) {
       padding: "0 20px",
     },
     backLink: { background: "none", border: "none", color: colors.inkSoft, fontSize: 13, fontFamily: "'Inter', sans-serif", cursor: "pointer", padding: 0, marginBottom: 16 },
-    intentHeading: { fontFamily: "'Fraunces', serif", fontSize: 22, fontWeight: 600, margin: "0 0 4px", color: colors.ink, textAlign: "center" },
+    intentHeading: { fontFamily: "'Fraunces', serif", fontSize: 20, fontWeight: 600, margin: "0 0 12px", color: colors.ink, textAlign: "center" },
     intentSub: { fontSize: 13.5, color: colors.inkSoft, marginBottom: 18, textAlign: "center" },
     intentSection: { marginTop: 22 },
     intentList: { display: "flex", flexDirection: "column", gap: 9 },
