@@ -245,7 +245,7 @@ export default function WhatNowApp() {
         setStep("result");
       } catch (e) {
         setError(e.message || "Something went wrong. Try again.");
-        setStep("intent");
+        setStep("input");
       } finally {
         setLoading(false);
       }
@@ -287,10 +287,16 @@ export default function WhatNowApp() {
     }
   };
 
-  const goToIntent = () => {
+  const selectedIntent = INTENTS.find((intent) => intent.id === selectedIntentId);
+
+  const runSelectedIntent = () => {
     if (!hasInput || !hasKey) return;
+    if (!selectedIntent) {
+      setError("Choose an option below before continuing.");
+      return;
+    }
     setError("");
-    setStep("intent");
+    runAnalysis(selectedIntent);
   };
 
   const loadExample = (ex) => {
@@ -300,7 +306,8 @@ export default function WhatNowApp() {
     setDocument(null);
     setMode("text");
     setTextInput(ex.text);
-    setStep("intent");
+    setSelectedIntentId(null);
+    setStep("input");
   };
 
   const startOver = () => {
@@ -318,7 +325,7 @@ export default function WhatNowApp() {
     setResult(null);
     setError("");
     setSelectedIntentId(null);
-    setStep("intent");
+    setStep("input");
   };
 
   const copyResponse = async () => {
@@ -599,9 +606,9 @@ export default function WhatNowApp() {
                 </div>
                 <button
                   className="wn-btn"
-                  style={{ ...styles.primaryBtn, ...(hasInput && hasKey ? {} : styles.btnDisabled) }}
-                  disabled={!hasInput || !hasKey}
-                  onClick={goToIntent}
+                  style={{ ...styles.primaryBtn, ...(!hasInput || !hasKey ? styles.btnDisabled : {}) }}
+                  disabled={!hasInput || !hasKey || loading}
+                  onClick={runSelectedIntent}
                 >
                   Continue →
                 </button>
@@ -628,65 +635,6 @@ export default function WhatNowApp() {
               ✨ We make confusing things clear, so you can move forward with confidence.
             </div>
           </>
-        )}
-
-        {step === "intent" && (
-          <div style={styles.inputCard} className="wn-input-card">
-            <button style={styles.backLink} onClick={() => setStep("input")} disabled={loading}>
-              ← Edit content
-            </button>
-            <div style={styles.intentHeading}>What do you want to know?</div>
-            <div style={styles.intentSub}>Pick one — we'll focus the answer around it.</div>
-
-            <div style={styles.intentList} className="wn-intent-list">
-              {INTENTS.map((intent) => {
-                const isActive = loading && selectedIntentId === intent.id;
-                const acc = INTENT_ACCENTS[intent.id][isDark ? "dark" : "light"];
-                return (
-                  <button
-                    key={intent.id}
-                    className="wn-intent"
-                    style={{
-                      ...styles.intentCard,
-                      ...(isActive ? { borderColor: acc.c, background: acc.s } : {}),
-                    }}
-                    disabled={loading}
-                    onClick={() => runAnalysis(intent)}
-                  >
-                    <div className="wn-intent-card-inner" style={{ display: "contents" }}>
-                      <div style={{ ...styles.intentIcon, background: acc.s }}>{intent.icon}</div>
-                      <div style={styles.intentText}>
-                        <div style={{ ...styles.intentLabel, color: acc.c }}>{intent.fullLabel}</div>
-                        <div style={styles.intentHint} className="wn-intent-hint">
-                          {intent.hint}
-                        </div>
-                      </div>
-                    </div>
-                    {isActive ? (
-                      <div className="wn-spinner" style={{ ...styles.spinner, borderTopColor: acc.c }} />
-                    ) : (
-                      <div className="wn-intent-arrow" style={{ ...styles.intentArrow, color: acc.c }}>
-                        →
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {error && <div style={styles.errorBox}>{error}</div>}
-
-            {loading && (
-              <>
-                <div className="wn-loading-text" style={styles.loadingText}>
-                  Figuring it out…
-                </div>
-                <div style={styles.scanWrap}>
-                  <div className="wn-scanline" style={styles.scanline} />
-                </div>
-              </>
-            )}
-          </div>
         )}
 
         {step === "result" && result && (
@@ -1088,6 +1036,7 @@ function buildStyles(colors) {
     backLink: { background: "none", border: "none", color: colors.inkSoft, fontSize: 13, fontFamily: "'Inter', sans-serif", cursor: "pointer", padding: 0, marginBottom: 16 },
     intentHeading: { fontFamily: "'Fraunces', serif", fontSize: 22, fontWeight: 600, margin: "0 0 4px", color: colors.ink, textAlign: "center" },
     intentSub: { fontSize: 13.5, color: colors.inkSoft, marginBottom: 18, textAlign: "center" },
+    intentSection: { marginTop: 22 },
     intentList: { display: "flex", flexDirection: "column", gap: 9 },
     intentCard: {
       display: "flex",
