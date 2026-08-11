@@ -151,17 +151,16 @@ function buildGeminiParts(input, intent) {
 }
 
 async function analyzeContent(input, intent) {
-  // Calls your own Express backend, which holds the Gemini key server-side
-  // and proxies the request on. The backend owns SYSTEM_PROMPT and
-  // buildGeminiParts-equivalent logic now — nothing secret ships to the client.
   const API_URL = import.meta.env.VITE_API_URL;
 
-const response = await fetch(`${API_URL}/api/analyze`, {
+  const response = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       input,
-      intent: { id: intent.id, fullLabel: intent.fullLabel, focus: intent.focus, forceReply: !!intent.forceReply },
+      intentId: intent.id,
     }),
   });
 
@@ -169,19 +168,35 @@ const response = await fetch(`${API_URL}/api/analyze`, {
     if (response.status === 429) {
       throw new Error("Too many requests right now. Try again in a moment.");
     }
-    throw new Error("The analysis request failed. Try again.");
+
+    const errorData = await response.json().catch(() => null);
+
+    throw new Error(
+      errorData?.error || "The analysis request failed. Try again."
+    );
   }
 
-  const parsed = await response.json();
+  const data = await response.json();
 
-  try {
-    if (intent.forceReply) parsed.needsResponse = true;
-    if (Array.isArray(parsed.actions)) parsed.actions = parsed.actions.slice(0, 3);
-    if (Array.isArray(parsed.watchouts)) parsed.watchouts = parsed.watchouts.slice(0, 2);
-    return parsed;
-  } catch (e) {
-    throw new Error("Couldn't make sense of the response. Try again.");
+  const parsed = data.result;
+
+  if (!parsed) {
+    throw new Error("The server returned an empty result.");
   }
+
+  if (intent.forceReply) {
+    parsed.needsResponse = true;
+  }
+
+  if (Array.isArray(parsed.actions)) {
+    parsed.actions = parsed.actions.slice(0, 3);
+  }
+
+  if (Array.isArray(parsed.watchouts)) {
+    parsed.watchouts = parsed.watchouts.slice(0, 2);
+  }
+
+  return parsed;
 }
 
 function fileToBase64(file) {
