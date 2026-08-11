@@ -154,7 +154,9 @@ async function analyzeContent(input, intent) {
   // Calls your own Express backend, which holds the Gemini key server-side
   // and proxies the request on. The backend owns SYSTEM_PROMPT and
   // buildGeminiParts-equivalent logic now — nothing secret ships to the client.
-  const response = await fetch("/api/analyze", {
+  const API_URL = import.meta.env.VITE_API_URL;
+
+const response = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
