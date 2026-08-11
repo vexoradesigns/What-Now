@@ -218,6 +218,10 @@ app.post("/api/analyze", async (req, res) => {
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 8787;
-app.listen(PORT, () => {
-  console.log(`What Now? server running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`What Now? server running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
