@@ -1,0 +1,7 @@
+{
+  "input": {
+    "mode": "text",
+    "text": "Your lease renewal is due. The new monthly rate reflecting market conditions will be $2,150 (previously $1,800), and this offer is contingent on signing by Friday. If we don't hear back by then we will assume you do not intend to renew and will proceed to list the unit."
+  },
+  "intentId": "action"
+}
